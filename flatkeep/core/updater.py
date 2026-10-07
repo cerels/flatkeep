@@ -1,11 +1,14 @@
 """The main workflow: add an app, check it for updates, install updates.
 
 Both the CLI and the GTK interface call these functions; none of them touch
-the UI, so they can run in a background thread.
+the UI, so they can run in a background thread. Decisions are pure functions
+with examples; the functions marked "Effect:" carry them out.
 """
 
+import dataclasses
 import re
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,36 +17,80 @@ from gi.repository import GLib
 from . import bundle, desktop_entry, github, host, store, windows
 from .github import Asset, Release
 from .store import WATCH, TrackedApp
+from .windows import WindowInfo
+
+# Examples from the other modules, used in this module's examples.
+from .github import MULTI_ARCH_RELEASE, NO_FLATPAK_RELEASE, NUVIO_RELEASE  # noqa: E402
+from .store import FLATPAK_REPO, NUVIO  # noqa: E402
 
 CACHE_DIR = Path(GLib.get_user_cache_dir()) / "flatkeep"
-
-
-def normalize(version: str | None) -> str:
-    """'v1.2.0' and '1.2.0' count as the same version."""
-    return (version or "").strip().lstrip("vV")
 
 
 class NoFlatpakError(LookupError):
     """The release has no .flatpak file, so the repo can only be watched."""
 
 
+def normalize(version: str | None) -> str:
+    """The version without spaces or a leading "v", so tags compare equal.
+
+    >>> normalize("v1.2.0"), normalize("1.2.0 "), normalize(None)
+    ('1.2.0', '1.2.0', '')
+    """
+    return (version or "").strip().lstrip("vV")
+
+
 @dataclass
 class Status:
+    """What a check found out about a tracked app.
+
+    Interpretation:
+    - app: the app that was checked
+    - installed: the version flatpak reports, None if not installed
+      (always None for watched repos)
+    - release: the newest usable release, None if the check failed
+    - asset: the .flatpak file to install from release (installed apps only)
+    - error: why the check failed, None if it worked
+    """
+
     app: TrackedApp
-    installed: str | None  # version flatpak reports, None if not installed
+    installed: str | None
     release: Release | None = None
     asset: Asset | None = None
     error: str | None = None
 
     @property
     def current(self) -> str:
+        """The version to show as "what you have now".
+
+        >>> Status(NUVIO, installed="0.1.27-alpha").current
+        '0.1.27-alpha'
+        >>> Status(FLATPAK_REPO, installed=None).current
+        '1.18.4'
+        """
         if self.app.is_watch:
             return self.app.seen_tag
         return self.app.installed_tag or self.installed or ""
 
     @property
     def update_available(self) -> bool:
-        """For watched repos: a release the user hasn't seen yet."""
+        """Is there something new? For an installed app, a release it doesn't
+        have yet; for a watched repo, a release the user hasn't seen.
+
+        >>> nuvio_asset = NUVIO_RELEASE.assets[1]
+        >>> Status(NUVIO, "0.1.27-alpha", NUVIO_RELEASE, nuvio_asset).update_available
+        False
+        >>> newer = dataclasses.replace(NUVIO_RELEASE, tag="0.1.28-alpha")
+        >>> Status(NUVIO, "0.1.27-alpha", newer, nuvio_asset).update_available
+        True
+        >>> Status(NUVIO, None, NUVIO_RELEASE, nuvio_asset).update_available  # uninstalled
+        True
+        >>> Status(NUVIO, "0.1.27-alpha", newer, None).update_available  # nothing to install
+        False
+        >>> Status(FLATPAK_REPO, None, dataclasses.replace(NO_FLATPAK_RELEASE, tag="1.19.0")).update_available
+        True
+        >>> Status(NUVIO, "0.1.27-alpha", error="offline").update_available
+        False
+        """
         if self.error or not self.release:
             return False
         if self.app.is_watch:
@@ -56,7 +103,151 @@ class Status:
         return latest not in (normalize(self.app.installed_tag), normalize(self.installed))
 
 
+def choose_flatpak_release(
+    releases: Iterable[Release], repo: str, pattern: str = "", arch: str | None = None
+) -> tuple[Release, Asset]:
+    """The newest release (releases are newest first) that has a .flatpak
+    file for this computer, and that file. A newer release without one, like
+    a nightly that only ships an AppImage, is skipped.
+
+    >>> release, asset = choose_flatpak_release([NO_FLATPAK_RELEASE, MULTI_ARCH_RELEASE], "o/r", arch="x86_64")
+    >>> release.tag, asset.name
+    ('v2.0', 'app-x86_64.flatpak')
+    >>> choose_flatpak_release([NO_FLATPAK_RELEASE], "flatpak/flatpak", arch="x86_64")
+    Traceback (most recent call last):
+    flatkeep.core.updater.NoFlatpakError: Release 1.18.4 of flatpak/flatpak has no .flatpak file for this computer
+    >>> choose_flatpak_release([], "o/r")
+    Traceback (most recent call last):
+    LookupError: o/r has no releases yet
+    """
+    first = None
+    for release in releases:
+        first = first or release
+        if asset := github.pick_flatpak_asset(release, pattern, arch):
+            return release, asset
+    if first is None:
+        raise LookupError(f"{repo} has no releases yet")
+    raise NoFlatpakError(f"Release {first.tag} of {repo} has no .flatpak file for this computer")
+
+
+def needs_install(installed: str | None, tag: str) -> bool:
+    """Should a freshly downloaded release be installed, given the version
+    flatpak reports (None if not installed)?
+
+    >>> needs_install(None, "v1.0"), needs_install("1.0", "v1.0"), needs_install("0.9", "v1.0")
+    (True, False, True)
+    """
+    return installed is None or normalize(installed) != normalize(tag)
+
+
+def is_tracked(apps: list[TrackedApp], repo: str) -> bool:
+    """Is repo already in the list? GitHub names ignore case.
+
+    >>> is_tracked([NUVIO], "nuviomedia/nuviodesktop"), is_tracked([NUVIO], "o/r")
+    (True, False)
+    """
+    return any(app.repo.lower() == repo.lower() for app in apps)
+
+
+def watched_app(repo: str, latest: Release, include_prereleases: bool = False) -> TrackedApp:
+    """A new watched repo. Its current release counts as already seen, so
+    only later releases are announced.
+
+    >>> app = watched_app("flatpak/flatpak", NO_FLATPAK_RELEASE)
+    >>> app.app_id, app.name, app.is_watch, app.seen_tag, app.notified_tag
+    ('github:flatpak/flatpak', 'flatpak', True, '1.18.4', '1.18.4')
+    """
+    return TrackedApp(
+        app_id=f"github:{repo}", repo=repo, name=repo.split("/")[1], kind=WATCH,
+        include_prereleases=include_prereleases, seen_tag=latest.tag, notified_tag=latest.tag,
+    )
+
+
+def check_pattern(pattern: str) -> None:
+    """Raise ValueError unless pattern is a valid file name filter (regex).
+
+    >>> check_pattern(r"x86_64.*\\.flatpak")
+    >>> check_pattern("[bad")
+    Traceback (most recent call last):
+    ValueError: File name filter isn't a valid pattern: unterminated character set at position 0
+    """
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        raise ValueError(f"File name filter isn't a valid pattern: {e}") from None
+
+
+def with_changes(
+    app: TrackedApp,
+    *,
+    name: str | None = None,
+    repo: str | None = None,
+    include_prereleases: bool | None = None,
+    auto_update: bool | None = None,
+    asset_pattern: str | None = None,
+    wm_class: str | None = None,
+    latest_tag: str = "",
+) -> TrackedApp:
+    """The app with the given settings changed; None means "keep". A watched
+    repo moved to another repo starts fresh: new ID, and latest_tag (the new
+    repo's newest release) counts as seen.
+
+    >>> with_changes(NUVIO, name="  ").name  # blank name: use the repo's
+    'NuvioDesktop'
+    >>> changed = with_changes(NUVIO, include_prereleases=True, auto_update=False, wm_class=" X ")
+    >>> changed.include_prereleases, changed.auto_update, changed.wm_class, NUVIO.auto_update
+    (True, False, 'X', True)
+    >>> moved = with_changes(FLATPAK_REPO, repo="flatpak/flatpak-builder", latest_tag="1.4.12")
+    >>> moved.app_id, moved.repo, moved.seen_tag, moved.notified_tag
+    ('github:flatpak/flatpak-builder', 'flatpak/flatpak-builder', '1.4.12', '1.4.12')
+    >>> with_changes(NUVIO, repo="NuvioMedia/Nuvio-Fork").app_id  # installed apps keep their ID
+    'com.nuvio.media.desktop'
+    """
+    changes = {}
+    new_repo = repo if repo is not None else app.repo
+    if name is not None:
+        changes["name"] = name.strip() or new_repo.split("/")[1]
+    if include_prereleases is not None:
+        changes["include_prereleases"] = include_prereleases
+    if auto_update is not None:
+        changes["auto_update"] = auto_update
+    if asset_pattern is not None:
+        changes["asset_pattern"] = asset_pattern.strip()
+    if wm_class is not None and not app.is_watch:
+        changes["wm_class"] = wm_class.strip()
+    if new_repo.lower() != app.repo.lower():
+        changes["repo"] = new_repo
+        if app.is_watch:
+            changes.update(app_id=f"github:{new_repo}", seen_tag=latest_tag, notified_tag=latest_tag)
+    return dataclasses.replace(app, **changes)
+
+
+def window_matches(app_id: str, window: WindowInfo) -> bool:
+    """Does the window already join the app's launcher, so no taskbar fix
+    is needed?
+
+    >>> window_matches("org.kde.konsole", WindowInfo(1, "org.kde.konsole", "org.kde.konsole"))
+    True
+    >>> window_matches("io.github.tgeorgiadis.QuiverLauncher", WindowInfo(1, "QuiverLauncher.Desktop", ""))
+    False
+    """
+    return window.desktop_file == app_id or window.wm_class.lower() == app_id.lower()
+
+
+# Effects: everything below talks to GitHub, flatpak, files or KWin.
+
+
+def find_flatpak_release(repo: str, include_prereleases: bool = False, pattern: str = "") -> tuple[Release, Asset]:
+    """Effect: asks GitHub (see choose_flatpak_release)."""
+    return choose_flatpak_release(github.releases(repo, include_prereleases), repo, pattern)
+
+
 def check(app: TrackedApp, installed_apps: dict[str, str] | None = None) -> Status:
+    """The app's status. installed_apps saves asking flatpak once per app.
+
+    Effect: asks GitHub (and flatpak, if installed_apps isn't given).
+    Never raises: problems end up in Status.error.
+    """
     if installed_apps is None:
         installed_apps = host.installed_apps()
     status = Status(app, installed_apps.get(app.app_id))
@@ -70,34 +261,19 @@ def check(app: TrackedApp, installed_apps: dict[str, str] | None = None) -> Stat
     return status
 
 
-def find_flatpak_release(repo: str, include_prereleases: bool = False, pattern: str = "") -> tuple[Release, Asset]:
-    """The newest release with a .flatpak file for this computer.
-
-    With pre-releases, skip ones without a .flatpak (e.g. a nightly that only
-    ships an AppImage) instead of failing.
-    """
-    first = None
-    for release in github.releases(repo, include_prereleases):
-        first = first or release
-        if asset := github.pick_flatpak_asset(release, pattern):
-            return release, asset
-    if first is None:
-        raise LookupError(f"{repo} has no releases yet")
-    raise NoFlatpakError(f"Release {first.tag} of {repo} has no .flatpak file for this computer")
-
-
 def add(repo_text: str, progress=None, include_prereleases: bool = False) -> TrackedApp:
-    """Start tracking a repo, installing its latest release if needed."""
+    """Start tracking a repo's app, installing its newest release if needed.
+
+    Effect: downloads, installs, and saves the app and its icon.
+    """
     repo = github.parse_repo(repo_text)
     _check_not_tracked(repo)
-
     release, asset = find_flatpak_release(repo, include_prereleases)
 
     path = _download(asset, progress)
     try:
         info = bundle.read_bundle(path)
-        installed = host.installed_apps().get(info.app_id)
-        if installed is None or normalize(installed) != normalize(release.tag):
+        if needs_install(host.installed_apps().get(info.app_id), release.tag):
             host.install_bundle(path)
     finally:
         path.unlink(missing_ok=True)
@@ -113,14 +289,13 @@ def add(repo_text: str, progress=None, include_prereleases: bool = False) -> Tra
 
 
 def watch(repo_text: str, include_prereleases: bool = False) -> TrackedApp:
-    """Track a repo's releases without installing anything."""
+    """Track a repo's releases without installing anything.
+
+    Effect: asks GitHub, saves the repo and the owner's avatar as its icon.
+    """
     repo = github.parse_repo(repo_text)
     _check_not_tracked(repo)
-    release = github.latest_release(repo, include_prereleases)
-    app = TrackedApp(
-        app_id=f"github:{repo}", repo=repo, name=repo.split("/")[1], kind=WATCH,
-        include_prereleases=include_prereleases, seen_tag=release.tag, notified_tag=release.tag,
-    )
+    app = watched_app(repo, github.latest_release(repo, include_prereleases), include_prereleases)
     _save_avatar(app)
     store.put(app)
     return app
@@ -136,67 +311,59 @@ def edit(
     asset_pattern: str | None = None,
     wm_class: str | None = None,
 ) -> TrackedApp:
-    """Change an app's settings. Only the arguments that are passed change."""
-    old_id = app.app_id
-    prereleases = app.include_prereleases if include_prereleases is None else include_prereleases
+    """Change an app's settings (see with_changes). Nothing is saved unless
+    GitHub still finds a usable release with the new settings.
 
+    Effect: asks GitHub, saves the app, applies or undoes the taskbar fix.
+    Also updates app itself, because the UI keeps hold of that object.
+    """
     if asset_pattern is not None:
-        try:
-            re.compile(asset_pattern)
-        except re.error as e:
-            raise ValueError(f"File name filter isn't a valid pattern: {e}") from None
-
+        check_pattern(asset_pattern)
     new_repo = github.parse_repo(repo_text) if repo_text is not None else app.repo
     repo_changed = new_repo.lower() != app.repo.lower()
     if repo_changed:
         _check_not_tracked(new_repo)
 
-    # Make sure the new settings still find a release before saving them.
+    latest_tag = ""
     if repo_changed or include_prereleases is not None or asset_pattern is not None:
+        prereleases = app.include_prereleases if include_prereleases is None else include_prereleases
         if app.is_watch:
-            release = github.latest_release(new_repo, prereleases)
+            latest_tag = github.latest_release(new_repo, prereleases).tag
         else:
             pattern = app.asset_pattern if asset_pattern is None else asset_pattern
-            release, _asset = find_flatpak_release(new_repo, prereleases, pattern)
+            latest_tag = find_flatpak_release(new_repo, prereleases, pattern)[0].tag
 
-    if name is not None:
-        app.name = name.strip() or new_repo.split("/")[1]
-    if include_prereleases is not None:
-        app.include_prereleases = include_prereleases
-    if auto_update is not None:
-        app.auto_update = auto_update
-    if asset_pattern is not None:
-        app.asset_pattern = asset_pattern.strip()
-    if repo_changed:
-        app.repo = new_repo
-        if app.is_watch:
-            # A different repo is a fresh start: its current release counts as seen.
-            app.app_id = f"github:{new_repo}"
-            app.seen_tag = app.notified_tag = release.tag
-
+    changed = with_changes(
+        app, name=name, repo=new_repo, include_prereleases=include_prereleases,
+        auto_update=auto_update, asset_pattern=asset_pattern, wm_class=wm_class, latest_tag=latest_tag,
+    )
+    # Re-applied even when unchanged: that restores a launcher that went missing.
     if wm_class is not None and not app.is_watch:
-        wm_class = wm_class.strip()
-        if wm_class:
-            desktop_entry.apply(app.app_id, wm_class)
+        if changed.wm_class:
+            desktop_entry.apply(changed.app_id, changed.wm_class)
         else:
-            desktop_entry.remove(app.app_id)
-        app.wm_class = wm_class
-
-    if app.app_id != old_id:
-        store.remove(old_id)
-        _save_avatar(app)
-    store.put(app)
+            desktop_entry.remove(changed.app_id)
+    if changed.app_id != app.app_id:
+        store.remove(app.app_id)
+        _save_avatar(changed)
+    store.put(changed)
+    app.__dict__.update(changed.__dict__)
     return app
 
 
 def mark_seen(app: TrackedApp, tag: str) -> None:
+    """Effect: records that the user looked at release tag (and was told about it)."""
     app.seen_tag = tag
     app.notified_tag = tag
     store.put(app)
 
 
 def update(app: TrackedApp, progress=None) -> str | None:
-    """Install the latest release if it's newer. Returns the new tag, or None."""
+    """Install the newest release if the app doesn't have it. Returns the
+    installed tag, or None if there was nothing to do.
+
+    Effect: downloads and installs, saves the app, refreshes the taskbar fix.
+    """
     if app.is_watch:
         return None
     status = check(app)
@@ -219,7 +386,7 @@ def update(app: TrackedApp, progress=None) -> str | None:
         store.save_icon(app.app_id, info.icon)
     app.installed_tag = status.release.tag
     store.put(app)
-    # Refresh our launcher copy from the new version's launcher.
+    # Rebuild our launcher copy from the new version's launcher.
     if app.wm_class:
         try:
             desktop_entry.apply(app.app_id, app.wm_class)
@@ -229,20 +396,20 @@ def update(app: TrackedApp, progress=None) -> str | None:
 
 
 def detect_wm_class(app: TrackedApp) -> str | None:
-    """The class the app's open window reports, if it differs from its app ID.
+    """The class the app's open window reports, or None if it already
+    matches the launcher. Raises LookupError if the app has no open window.
 
-    Returns None when the window already matches. Raises LookupError when the
-    app has no open window.
+    Effect: asks KWin.
     """
     window = windows.find_window(app.app_id)
     if window is None:
         raise LookupError(f"Open {app.name or app.app_id} first, then try again")
-    if window.desktop_file == app.app_id or window.wm_class.lower() == app.app_id.lower():
-        return None
-    return window.wm_class
+    return None if window_matches(app.app_id, window) else window.wm_class
 
 
 def remove(app_id: str, uninstall: bool = False) -> None:
+    """Effect: stops tracking app_id, undoes its taskbar fix, and uninstalls
+    it if asked."""
     app = next((a for a in store.load() if a.app_id == app_id), None)
     if app and app.wm_class:
         desktop_entry.remove(app_id)
@@ -252,7 +419,8 @@ def remove(app_id: str, uninstall: bool = False) -> None:
 
 
 def _save_avatar(app: TrackedApp) -> None:
-    """The repo owner's GitHub avatar stands in for a watched repo's icon."""
+    """Effect: saves the repo owner's GitHub avatar as the app's icon
+    (watched repos have no icon of their own). Failures are ignored."""
     try:
         store.ICON_DIR.mkdir(parents=True, exist_ok=True)
         github.download(f"https://github.com/{app.repo.split('/')[0]}.png?size=128", store.icon_path(app.app_id))
@@ -261,13 +429,14 @@ def _save_avatar(app: TrackedApp) -> None:
 
 
 def _check_not_tracked(repo: str) -> None:
-    if any(a.repo.lower() == repo.lower() for a in store.load()):
+    """Effect: reads the list; raises ValueError if repo is already in it."""
+    if is_tracked(store.load(), repo):
         raise ValueError(f"{repo} is already in the list")
 
 
 def _download(asset: Asset, progress) -> Path:
-    # The cache lives under the real home folder, so the host's flatpak
-    # command can read the file even when we run inside the sandbox.
+    """Effect: downloads asset into the cache. The cache is under the real
+    home folder, so the host's flatpak can read it even from the sandbox."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / asset.name
     github.download(asset.url, path, progress)

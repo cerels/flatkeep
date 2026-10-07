@@ -23,6 +23,11 @@ _ARCH_ALIASES = {
 
 @dataclass
 class Asset:
+    """A file attached to a release.
+
+    Interpretation: name is the file name, url downloads it, size is in bytes.
+    """
+
     name: str
     url: str
     size: int
@@ -30,6 +35,16 @@ class Asset:
 
 @dataclass
 class Release:
+    """A published version of a repository.
+
+    Interpretation:
+    - tag: the git tag, e.g. "v1.2.0"; this is what Flatkeep compares
+    - name: the title shown on GitHub (the tag if it has none)
+    - html_url: the release's page
+    - prerelease: marked as alpha/beta/nightly by the author
+    - assets: the attached files, in GitHub's order
+    """
+
     tag: str
     name: str
     html_url: str
@@ -37,25 +52,54 @@ class Release:
     assets: list[Asset] = field(default_factory=list)
 
 
+# Examples:
+def _asset(name: str) -> Asset:
+    return Asset(name=name, url=f"https://example.com/{name}", size=1)
+
+
+NUVIO_RELEASE = Release(
+    tag="0.1.27-alpha", name="0.1.27-alpha",
+    html_url="https://github.com/NuvioMedia/NuvioDesktop/releases/tag/0.1.27-alpha",
+    assets=[_asset("Nuvio-0.1.27.AppImage"), _asset("Nuvio-Linux-x86_64-0.1.27-alpha.flatpak")],
+)
+MULTI_ARCH_RELEASE = Release(
+    tag="v2.0", name="Version 2", html_url="https://github.com/o/r/releases/tag/v2.0",
+    assets=[_asset("app-aarch64.flatpak"), _asset("app-x86_64.flatpak"), _asset("app-x86_64-debug.flatpak")],
+)
+NO_FLATPAK_RELEASE = Release(
+    tag="1.18.4", name="1.18.4", html_url="https://github.com/flatpak/flatpak/releases/tag/1.18.4",
+    assets=[_asset("flatpak-1.18.4.tar.xz")],
+)
+
+
 def parse_repo(text: str) -> str:
-    """Turn 'https://github.com/owner/repo' or 'owner/repo' into 'owner/repo'."""
+    """The "owner/name" of a GitHub repository, from a URL or "owner/name".
+
+    >>> parse_repo("https://github.com/NuvioMedia/NuvioDesktop")
+    'NuvioMedia/NuvioDesktop'
+    >>> parse_repo("github.com/flatpak/flatpak.git")
+    'flatpak/flatpak'
+    >>> parse_repo("https://github.com/o/r/releases/tag/v1")
+    'o/r'
+    >>> parse_repo("  owner/name ")
+    'owner/name'
+    >>> parse_repo("not-a-url")
+    Traceback (most recent call last):
+    ValueError: Not a GitHub repository: 'not-a-url'
+    """
     match = _REPO_RE.match(text.strip())
     if not match:
         raise ValueError(f"Not a GitHub repository: {text!r}")
     return f"{match[1]}/{match[2]}"
 
 
-def _get_json(url: str):
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT}
-    # Without a token GitHub allows 60 API requests per hour.
-    if token := os.environ.get("GITHUB_TOKEN"):
-        headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
+def release_from_json(data: dict) -> Release:
+    """A Release from one entry of GitHub's releases API.
 
-
-def _release(data: dict) -> Release:
+    >>> release_from_json({"tag_name": "v1", "html_url": "u", "name": None,
+    ...     "assets": [{"name": "a.flatpak", "browser_download_url": "d", "size": 5}]})
+    Release(tag='v1', name='v1', html_url='u', prerelease=False, assets=[Asset(name='a.flatpak', url='d', size=5)])
+    """
     return Release(
         tag=data["tag_name"],
         name=data.get("name") or data["tag_name"],
@@ -68,15 +112,73 @@ def _release(data: dict) -> Release:
     )
 
 
+def mentions_arch(file_name: str, aliases) -> bool:
+    """Does the file name contain any of these architecture names?
+
+    >>> mentions_arch("App-Linux-x86_64.flatpak", ("x86_64", "amd64"))
+    True
+    >>> mentions_arch("app.flatpak", ("x86_64", "amd64"))
+    False
+    """
+    return any(alias in file_name.lower() for alias in aliases)
+
+
+def pick_flatpak_asset(release: Release, pattern: str = "", arch: str | None = None) -> Asset | None:
+    """The .flatpak file for this computer: the first one naming our CPU
+    architecture, else the first one naming none. pattern (a regex) narrows
+    the choice; arch defaults to this machine's.
+
+    >>> pick_flatpak_asset(NUVIO_RELEASE, arch="x86_64").name
+    'Nuvio-Linux-x86_64-0.1.27-alpha.flatpak'
+    >>> pick_flatpak_asset(MULTI_ARCH_RELEASE, arch="aarch64").name
+    'app-aarch64.flatpak'
+    >>> pick_flatpak_asset(MULTI_ARCH_RELEASE, pattern="debug", arch="x86_64").name
+    'app-x86_64-debug.flatpak'
+    >>> pick_flatpak_asset(NUVIO_RELEASE, arch="aarch64") is None  # only an x86_64 file
+    True
+    >>> pick_flatpak_asset(NO_FLATPAK_RELEASE, arch="x86_64") is None
+    True
+    >>> no_arch = Release(tag="1", name="1", html_url="u", assets=[_asset("app.flatpak")])
+    >>> pick_flatpak_asset(no_arch, arch="aarch64").name
+    'app.flatpak'
+    """
+    arch = arch or platform.machine()
+    ours = _ARCH_ALIASES.get(arch, (arch,))
+    all_aliases = [alias for aliases in _ARCH_ALIASES.values() for alias in aliases]
+
+    candidates = [a for a in release.assets if a.name.endswith(".flatpak")]
+    if pattern:
+        candidates = [a for a in candidates if re.search(pattern, a.name)]
+
+    ours_first = [a for a in candidates if mentions_arch(a.name, ours)]
+    no_arch = [a for a in candidates if not mentions_arch(a.name, all_aliases)]
+    return next(iter(ours_first + no_arch), None)
+
+
+def _get_json(url: str):
+    """Effect: one request to the GitHub API."""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT}
+    # Without a token GitHub allows 60 API requests per hour.
+    if token := os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
 def releases(repo: str, include_prereleases: bool = False) -> Iterator[Release]:
-    """Releases newest first. Without pre-releases, only the latest stable one."""
+    """The repo's releases, newest first. Without pre-releases, only the
+    latest stable one. Drafts are skipped.
+
+    Effect: asks the GitHub API, lazily (stopping early saves requests).
+    """
     try:
         if not include_prereleases:
-            yield _release(_get_json(f"{API}/repos/{repo}/releases/latest"))
+            yield release_from_json(_get_json(f"{API}/repos/{repo}/releases/latest"))
             return
         for data in _get_json(f"{API}/repos/{repo}/releases?per_page=20"):
             if not data.get("draft"):
-                yield _release(data)
+                yield release_from_json(data)
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
@@ -85,33 +187,15 @@ def releases(repo: str, include_prereleases: bool = False) -> Iterator[Release]:
 
 
 def latest_release(repo: str, include_prereleases: bool = False) -> Release:
+    """Effect: asks the GitHub API (see releases)."""
     for release in releases(repo, include_prereleases):
         return release
     raise LookupError(f"{repo} has no releases yet")
 
 
-def pick_flatpak_asset(release: Release, pattern: str = "") -> Asset | None:
-    """Choose the .flatpak file for this machine's architecture."""
-    candidates = [a for a in release.assets if a.name.endswith(".flatpak")]
-    if pattern:
-        candidates = [a for a in candidates if re.search(pattern, a.name)]
-
-    arch = platform.machine()
-    ours = _ARCH_ALIASES.get(arch, (arch,))
-    all_aliases = [alias for aliases in _ARCH_ALIASES.values() for alias in aliases]
-
-    for asset in candidates:
-        if any(alias in asset.name.lower() for alias in ours):
-            return asset
-    # Fall back to a file that doesn't name any architecture.
-    for asset in candidates:
-        if not any(alias in asset.name.lower() for alias in all_aliases):
-            return asset
-    return None
-
-
 def download(url: str, dest, progress=None) -> None:
-    """Download url to dest. progress(fraction) is called as data arrives."""
+    """Effect: downloads url into the file dest, calling progress(fraction)
+    as data arrives. No token is sent: downloads redirect to another host."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=60) as response, open(dest, "wb") as out:
         total = int(response.headers.get("Content-Length") or 0)

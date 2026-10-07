@@ -29,6 +29,12 @@ python3 -m flatkeep check-updates    # what the background timer runs
 
 Set `GITHUB_TOKEN` if you hit GitHub's limit of 60 API requests per hour.
 
+Run the tests (the examples written in the docstrings of `flatkeep/core/`):
+
+```sh
+python3 -m unittest
+```
+
 ## Build the Flatpak
 
 ```sh
@@ -120,7 +126,8 @@ Logs: `journalctl --user -u flatkeep-update`
 
 ```
 flatkeep/
-  core/            no GTK here: usable from the CLI, the UI or tests
+  core/            no GTK here: usable from the CLI, the UI or tests;
+                   written with the HtDP design recipe (see CLAUDE.md)
     github.py      release lookup, picking the asset, downloading
     bundle.py      reading app ID/name/icon from a .flatpak file
     host.py        every call to the `flatpak` command
@@ -132,6 +139,7 @@ flatkeep/
     desktop_entry.py  launcher copies with StartupWMClass (taskbar fix)
   ui/              GTK 4 + libadwaita window and the Edit dialog
   cli.py           `flatkeep add|list|update|remove`
+tests/             runs the docstring examples of flatkeep/core
 bin/flatkeep       launcher used inside the Flatpak
 data/              desktop file, metainfo, icon
 io.github.cerels.Flatkeep.yml   Flatpak manifest

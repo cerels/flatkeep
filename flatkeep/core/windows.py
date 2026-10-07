@@ -44,22 +44,69 @@ class NotSupported(RuntimeError):
 
 @dataclass
 class WindowInfo:
+    """An open window, as KWin sees it.
+
+    Interpretation: pid is its process; wm_class is the class it reports
+    (what taskbars match launchers by); desktop_file is the launcher KWin
+    linked it to, "" if none.
+    """
+
     pid: int
     wm_class: str
     desktop_file: str
 
 
+# Examples:
+KWIN_REPORT = "18848\tQuiverLauncher.Desktop\t\n10835\torg.kde.konsole\torg.kde.konsole\nnot-a-pid\tx\ty"
+QUIVER_CGROUP = (
+    "0::/user.slice/user-1000.slice/user@1000.service/app.slice/"
+    "app-flatpak-io.github.tgeorgiadis.QuiverLauncher-3930108342.scope\n"
+)
+
+
+def parse_window_list(report: str) -> list[WindowInfo]:
+    """The windows in the text our KWin script sends: one "pid, class,
+    launcher" line per window, separated by tabs.
+
+    >>> parse_window_list(KWIN_REPORT)
+    [WindowInfo(pid=18848, wm_class='QuiverLauncher.Desktop', desktop_file=''), WindowInfo(pid=10835, wm_class='org.kde.konsole', desktop_file='org.kde.konsole')]
+    """
+    windows = []
+    for line in report.splitlines():
+        pid, wm_class, desktop_file = (line.split("\t") + ["", ""])[:3]
+        if pid.isdigit():
+            windows.append(WindowInfo(int(pid), wm_class, desktop_file))
+    return windows
+
+
+def runs_in_app(cgroup: str, app_id: str) -> bool:
+    """Does a process with this /proc/<pid>/cgroup belong to the Flatpak app?
+    Flatpak runs each app in a systemd scope named after it.
+
+    >>> runs_in_app(QUIVER_CGROUP, "io.github.tgeorgiadis.QuiverLauncher")
+    True
+    >>> runs_in_app(QUIVER_CGROUP, "io.github.tgeorgiadis.Quiver")
+    False
+    """
+    return f"app-flatpak-{app_id}-" in cgroup
+
+
 def find_window(app_id: str) -> WindowInfo | None:
-    """The first open window of app_id, or None if it has no window open."""
+    """The first open window of app_id, or None if it has no window open.
+
+    Effect: asks KWin, and reads processes' cgroups on the host.
+    """
     for window in list_windows():
-        cgroup = host.run("cat", f"/proc/{window.pid}/cgroup", check=False).stdout
-        if f"app-flatpak-{app_id}-" in cgroup:
+        if runs_in_app(host.run("cat", f"/proc/{window.pid}/cgroup", check=False).stdout, app_id):
             return window
     return None
 
 
 def list_windows(timeout_ms: int = 5000) -> list[WindowInfo]:
-    """Ask KWin for every normal window. Safe to call from a worker thread."""
+    """Every normal window. Safe to call from a worker thread.
+
+    Effect: loads a KWin script and waits for its D-Bus reply.
+    """
     # Incoming D-Bus calls are dispatched to the thread-default main context,
     # so give this thread its own and spin it until KWin answers.
     context = GLib.MainContext.new()
@@ -107,12 +154,7 @@ def list_windows(timeout_ms: int = 5000) -> list[WindowInfo]:
 
     if not replies:
         raise TimeoutError("KWin didn't answer")
-    windows = []
-    for line in replies[0].splitlines():
-        pid, wm_class, desktop_file = (line.split("\t") + ["", ""])[:3]
-        if pid.isdigit():
-            windows.append(WindowInfo(int(pid), wm_class, desktop_file))
-    return windows
+    return parse_window_list(replies[0])
 
 
 def _call(bus, name, path, interface, method, args):

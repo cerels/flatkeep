@@ -16,7 +16,8 @@ class FlatpakError(RuntimeError):
 
 
 def run(*command: str, input: str | None = None, check: bool = True) -> subprocess.CompletedProcess:
-    """Run a command on the host system."""
+    """Effect: runs command on the host system (outside the sandbox, if
+    we're in one), feeding it input. With check, a failure raises FlatpakError."""
     if IN_SANDBOX:
         command = ("flatpak-spawn", "--host", *command)
     result = subprocess.run(command, input=input, capture_output=True, text=True)
@@ -27,24 +28,39 @@ def run(*command: str, input: str | None = None, check: bool = True) -> subproce
 
 
 def flatpak(*args: str) -> str:
+    """Effect: runs the host's flatpak command; returns what it printed."""
     return run("flatpak", *args).stdout
 
 
-def installed_apps() -> dict[str, str]:
-    """Map of app ID -> version for apps in the user installation."""
-    output = flatpak("list", "--app", "--user", "--columns=application,version")
+def parse_installed(listing: str) -> dict[str, str]:
+    r"""App ID -> version, from `flatpak list --columns=application,version`.
+    We use --columns because `flatpak info` output is translated.
+
+    >>> parse_installed("com.nuvio.media.desktop\t0.1.27-alpha\nio.github.cerels.Flatkeep\t\n")
+    {'com.nuvio.media.desktop': '0.1.27-alpha', 'io.github.cerels.Flatkeep': ''}
+    """
     apps = {}
-    for line in output.splitlines():
+    for line in listing.splitlines():
         app_id, _, version = line.partition("\t")
         if app_id:
             apps[app_id] = version.strip()
     return apps
 
 
+def installed_apps() -> dict[str, str]:
+    """App ID -> version for apps in the user installation.
+
+    Effect: runs `flatpak list` on the host.
+    """
+    return parse_installed(flatpak("list", "--app", "--user", "--columns=application,version"))
+
+
 def install_bundle(path) -> None:
-    # --reinstall lets a newer bundle replace the installed version.
+    """Effect: installs the bundle file for the user. --reinstall lets a
+    newer bundle replace the installed version."""
     flatpak("install", "--user", "--noninteractive", "--reinstall", "--bundle", str(path))
 
 
 def uninstall(app_id: str) -> None:
+    """Effect: uninstalls app_id from the user installation."""
     flatpak("uninstall", "--user", "--noninteractive", app_id)
