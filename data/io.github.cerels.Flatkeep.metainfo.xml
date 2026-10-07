@@ -19,6 +19,15 @@
   <launchable type="desktop-id">io.github.cerels.Flatkeep.desktop</launchable>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.0" date="2026-10-07">
+      <description>
+        <p>A release only counts as new if it was published after the one you have.
+          Turning pre-releases off no longer shows an older release as new, and
+          background checks never install an older version.</p>
+        <p>The code was rewritten following the How to Design Programs design recipe,
+          with runnable examples that are checked before every build.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-10-06">
       <description>
         <p>Ship PNG icons alongside the SVG so the app icon shows in every launcher.</p>
