@@ -18,7 +18,8 @@ jobs:
       - name: Install PyGObject
         run: sudo apt-get update && sudo apt-get install -y python3-gi gir1.2-glib-2.0
       - name: Run the examples in the docstrings
-        run: /usr/bin/python3 -m unittest -v
+        # Only look in tests/: the CI machine has no GTK for flatkeep.ui
+        run: /usr/bin/python3 -m unittest discover -s tests -t . -v
 
   build:
     needs: test
