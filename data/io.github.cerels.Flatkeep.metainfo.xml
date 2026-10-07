@@ -19,6 +19,12 @@
   <launchable type="desktop-id">io.github.cerels.Flatkeep.desktop</launchable>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.1" date="2026-10-07">
+      <description>
+        <p>Apps updated outside Flatkeep now show the right version: when the
+          installed version matches the latest release, Flatkeep records it.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-10-07">
       <description>
         <p>A release only counts as new if it was published after the one you have.

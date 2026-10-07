@@ -65,6 +65,11 @@ NUVIO_RELEASE = Release(
     html_url="https://github.com/NuvioMedia/NuvioDesktop/releases/tag/0.1.27-alpha",
     assets=[_asset("Nuvio-0.1.27.AppImage"), _asset("Nuvio-Linux-x86_64-0.1.27-alpha.flatpak")],
 )
+NEWER_NUVIO = Release(
+    tag="0.1.28-alpha", name="0.1.28-alpha", published="2026-10-10T00:00:00Z",
+    html_url="https://github.com/NuvioMedia/NuvioDesktop/releases/tag/0.1.28-alpha",
+    assets=[_asset("Nuvio-Linux-x86_64-0.1.28-alpha.flatpak")],
+)
 MULTI_ARCH_RELEASE = Release(
     tag="v2.0", name="Version 2", html_url="https://github.com/o/r/releases/tag/v2.0", published="2026-05-01T12:00:00Z",
     assets=[_asset("app-aarch64.flatpak"), _asset("app-x86_64.flatpak"), _asset("app-x86_64-debug.flatpak")],

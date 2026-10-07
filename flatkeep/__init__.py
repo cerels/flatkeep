@@ -1,4 +1,4 @@
 """Flatkeep: install and update Flatpak apps from GitHub releases."""
 
 APP_ID = "io.github.cerels.Flatkeep"
-VERSION = "0.2.0"
+VERSION = "0.2.1"

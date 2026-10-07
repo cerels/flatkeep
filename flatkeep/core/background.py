@@ -13,7 +13,7 @@ from . import host, notify, store, updater
 from .updater import Status
 
 # Examples from the other modules, used in this module's examples.
-from .github import NO_FLATPAK_RELEASE, NUVIO_RELEASE  # noqa: E402
+from .github import NEWER_NUVIO, NO_FLATPAK_RELEASE, NUVIO_RELEASE  # noqa: E402
 from .store import FLATPAK_REPO, NUVIO  # noqa: E402
 
 UNIT = "flatkeep-update"
@@ -26,8 +26,7 @@ NOTIFY = "notify"  # tell the user a release is out
 NOTHING = "nothing"  # nothing new, or the user was already told
 
 # Examples:
-_NEWER_NUVIO = dataclasses.replace(NUVIO_RELEASE, tag="0.1.28-alpha")
-NUVIO_UPDATE = Status(NUVIO, installed="0.1.27-alpha", release=_NEWER_NUVIO, asset=NUVIO_RELEASE.assets[1])
+NUVIO_UPDATE = Status(NUVIO, installed="0.1.27-alpha", release=NEWER_NUVIO, asset=NEWER_NUVIO.assets[0])
 NEW_FLATPAK_RELEASE = Status(FLATPAK_REPO, installed=None, release=dataclasses.replace(NO_FLATPAK_RELEASE, tag="1.19.0"))
 
 

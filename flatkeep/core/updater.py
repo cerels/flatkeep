@@ -20,7 +20,7 @@ from .store import WATCH, TrackedApp
 from .windows import WindowInfo
 
 # Examples from the other modules, used in this module's examples.
-from .github import MULTI_ARCH_RELEASE, NO_FLATPAK_RELEASE, NUVIO_RELEASE  # noqa: E402
+from .github import MULTI_ARCH_RELEASE, NEWER_NUVIO, NO_FLATPAK_RELEASE, NUVIO_RELEASE  # noqa: E402
 from .store import FLATPAK_REPO, NUVIO  # noqa: E402
 
 CACHE_DIR = Path(GLib.get_user_cache_dir()) / "flatkeep"
@@ -256,22 +256,39 @@ def with_changes(
     return dataclasses.replace(app, **changes)
 
 
-def with_dates_filled(app: TrackedApp, release: Release) -> TrackedApp:
-    """The app with its missing publish date filled in, when release is the
-    one it has (installed, or last seen). Apps saved before Flatkeep stored
-    dates get them this way on their next check.
+def with_release_recorded(app: TrackedApp, release: Release, installed: str | None) -> TrackedApp:
+    """The app with its record of the release it has brought up to date,
+    given the newest release and the version flatpak reports (None if not
+    installed).
 
-    >>> with_dates_filled(NUVIO, NUVIO_RELEASE).installed_published
+    - The installed version is release's tag: the app was updated, maybe
+      outside Flatkeep, so release becomes the installed one.
+    - The recorded release is release but its date is missing (saved before
+      Flatkeep stored dates): the date is filled in. Same for watched repos.
+
+    Other versions aren't trusted: an app's version can be written
+    differently from its release tags.
+
+    >>> updated_elsewhere = with_release_recorded(NUVIO, NEWER_NUVIO, "0.1.28-alpha")
+    >>> updated_elsewhere.installed_tag, updated_elsewhere.installed_published
+    ('0.1.28-alpha', '2026-10-10T00:00:00Z')
+    >>> with_release_recorded(NUVIO, NUVIO_RELEASE, "0.1.27-alpha").installed_published
     '2026-10-03T10:58:40Z'
-    >>> newer = dataclasses.replace(NUVIO_RELEASE, tag="0.1.28-alpha", published="2026-10-10T00:00:00Z")
-    >>> with_dates_filled(NUVIO, newer).installed_published  # not the one installed
-    ''
-    >>> with_dates_filled(FLATPAK_REPO, NO_FLATPAK_RELEASE).seen_published
+    >>> with_release_recorded(NUVIO, NEWER_NUVIO, "0.1.27-alpha") == NUVIO  # not updated yet
+    True
+    >>> with_release_recorded(NUVIO, NEWER_NUVIO, "1.0") == NUVIO  # version unlike the tags
+    True
+    >>> with_release_recorded(FLATPAK_REPO, NO_FLATPAK_RELEASE, None).seen_published
     '2026-08-01T09:00:00Z'
     """
-    if app.is_watch and not app.seen_published and normalize(release.tag) == normalize(app.seen_tag):
-        return dataclasses.replace(app, seen_published=release.published)
-    if not app.is_watch and not app.installed_published and normalize(release.tag) == normalize(app.installed_tag):
+    same = normalize(release.tag)
+    if app.is_watch:
+        if not app.seen_published and same == normalize(app.seen_tag):
+            return dataclasses.replace(app, seen_published=release.published)
+        return app
+    if installed is not None and normalize(installed) == same:
+        return dataclasses.replace(app, installed_tag=release.tag, installed_published=release.published)
+    if not app.installed_published and same == normalize(app.installed_tag):
         return dataclasses.replace(app, installed_published=release.published)
     return app
 
@@ -300,7 +317,8 @@ def check(app: TrackedApp, installed_apps: dict[str, str] | None = None) -> Stat
     """The app's status. installed_apps saves asking flatpak once per app.
 
     Effect: asks GitHub (and flatpak, if installed_apps isn't given), and
-    saves a missing publish date (see with_dates_filled). Never raises:
+    brings the app's record of its release up to date (see
+    with_release_recorded). Never raises:
     problems end up in Status.error.
     """
     if installed_apps is None:
@@ -315,9 +333,9 @@ def check(app: TrackedApp, installed_apps: dict[str, str] | None = None) -> Stat
         status.error = str(e)
         return status
 
-    filled = with_dates_filled(app, status.release)
-    if filled != app:
-        app.__dict__.update(filled.__dict__)  # callers keep this object, like edit()
+    recorded = with_release_recorded(app, status.release, status.installed)
+    if recorded != app:
+        app.__dict__.update(recorded.__dict__)  # callers keep this object, like edit()
         store.put(app)
     return status
 
