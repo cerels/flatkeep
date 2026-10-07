@@ -124,9 +124,9 @@ Logs: `journalctl --user -u flatkeep-update`
 
 ## Project layout
 
-```
 All code follows the HtDP design recipe (see CLAUDE.md).
 
+```
 flatkeep/
   core/            no GTK here: usable from the CLI, the UI or tests
     github.py      release lookup, picking the asset, downloading
