@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.cerels.Flatkeep</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Flatkeep</name>
+  <summary>Install and update Flatpak apps from GitHub releases</summary>
+  <description>
+    <p>
+      Some apps publish .flatpak files on GitHub before they reach Flathub.
+      Flatkeep installs them and keeps them up to date when new releases come out.
+    </p>
+  </description>
+  <developer id="io.github.cerels">
+    <name>Carlos Alberto Caro</name>
+  </developer>
+  <url type="homepage">https://github.com/cerels/flatkeep</url>
+  <url type="bugtracker">https://github.com/cerels/flatkeep/issues</url>
+  <launchable type="desktop-id">io.github.cerels.Flatkeep.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-05"/>
+  </releases>
+</component>

@@ -1,0 +1,67 @@
+# Builds the Flatpak on every push and pull request (download it from the
+# run's "Artifacts"). Pushing a tag like v0.2.0 also publishes a GitHub
+# Release with the .flatpak attached, which Flatkeep itself can track.
+name: Flatpak
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      # Comes with flatpak-builder and the GNOME 50 SDK already installed.
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' flatkeep/__init__.py)
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match VERSION $version in flatkeep/__init__.py"
+            exit 1
+          fi
+          grep -q "<release version=\"$version\"" data/io.github.cerels.Flatkeep.metainfo.xml || {
+            echo "Add a <release version=\"$version\"> entry to the metainfo file"
+            exit 1
+          }
+
+      - uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-${{ hashFiles('io.github.cerels.Flatkeep.yml') }}-${{ github.sha }}
+          restore-keys: flatpak-builder-${{ hashFiles('io.github.cerels.Flatkeep.yml') }}-
+
+      - name: Build
+        run: ./build-flatpak.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatkeep-flatpak
+          path: dist/*.flatpak
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: flatkeep-flatpak
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.flatpak
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

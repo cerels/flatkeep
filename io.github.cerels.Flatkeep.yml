@@ -1,0 +1,34 @@
+id: io.github.cerels.Flatkeep
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: flatkeep
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Lets Flatkeep run `flatpak` on the host to install and update bundles
+  - --talk-name=org.freedesktop.Flatpak
+  # Notifications from background checks, when the window isn't open
+  - --talk-name=org.freedesktop.Notifications
+  # Detecting window classes for the taskbar fix (KDE Plasma only)
+  - --talk-name=org.kde.KWin
+modules:
+  - name: flatkeep
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 bin/flatkeep -t /app/bin
+      - mkdir -p /app/share/flatkeep && cp -r flatkeep /app/share/flatkeep/
+      - install -Dm644 data/io.github.cerels.Flatkeep.desktop -t /app/share/applications
+      - install -Dm644 data/io.github.cerels.Flatkeep.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 data/io.github.cerels.Flatkeep.svg -t /app/share/icons/hicolor/scalable/apps
+    sources:
+      - type: dir
+        path: .
+        skip:
+          - .git
+          - .flatpak-builder
+          - build-dir
+          - repo

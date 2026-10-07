@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Flatkeep
+Comment=Install and update Flatpak apps from GitHub releases
+Exec=flatkeep
+Icon=io.github.cerels.Flatkeep
+Terminal=false
+Type=Application
+Categories=System;PackageManager;GTK;
+Keywords=flatpak;github;update;release;bundle;
+StartupNotify=true
