@@ -51,6 +51,9 @@ def decide_action(status: Status) -> str:
     'nothing'
     >>> decide_action(dataclasses.replace(NUVIO_UPDATE, release=NUVIO_RELEASE))  # up to date
     'nothing'
+    >>> on_rc = dataclasses.replace(NUVIO, installed_tag="0.2.0-rc.1", installed_published="2026-10-20T00:00:00Z")
+    >>> decide_action(dataclasses.replace(NUVIO_UPDATE, app=on_rc))  # older release: never downgrade
+    'nothing'
     """
     if not status.update_available:
         return NOTHING

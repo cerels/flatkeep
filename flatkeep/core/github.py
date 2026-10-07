@@ -42,6 +42,8 @@ class Release:
     - name: the title shown on GitHub (the tag if it has none)
     - html_url: the release's page
     - prerelease: marked as alpha/beta/nightly by the author
+    - published: when it was published, ISO 8601 in UTC ("2026-10-03T10:58:40Z"),
+      "" if unknown. Same-format UTC strings sort in time order.
     - assets: the attached files, in GitHub's order
     """
 
@@ -49,6 +51,7 @@ class Release:
     name: str
     html_url: str
     prerelease: bool = False
+    published: str = ""
     assets: list[Asset] = field(default_factory=list)
 
 
@@ -58,16 +61,17 @@ def _asset(name: str) -> Asset:
 
 
 NUVIO_RELEASE = Release(
-    tag="0.1.27-alpha", name="0.1.27-alpha",
+    tag="0.1.27-alpha", name="0.1.27-alpha", published="2026-10-03T10:58:40Z",
     html_url="https://github.com/NuvioMedia/NuvioDesktop/releases/tag/0.1.27-alpha",
     assets=[_asset("Nuvio-0.1.27.AppImage"), _asset("Nuvio-Linux-x86_64-0.1.27-alpha.flatpak")],
 )
 MULTI_ARCH_RELEASE = Release(
-    tag="v2.0", name="Version 2", html_url="https://github.com/o/r/releases/tag/v2.0",
+    tag="v2.0", name="Version 2", html_url="https://github.com/o/r/releases/tag/v2.0", published="2026-05-01T12:00:00Z",
     assets=[_asset("app-aarch64.flatpak"), _asset("app-x86_64.flatpak"), _asset("app-x86_64-debug.flatpak")],
 )
 NO_FLATPAK_RELEASE = Release(
     tag="1.18.4", name="1.18.4", html_url="https://github.com/flatpak/flatpak/releases/tag/1.18.4",
+    published="2026-08-01T09:00:00Z",
     assets=[_asset("flatpak-1.18.4.tar.xz")],
 )
 
@@ -96,15 +100,16 @@ def parse_repo(text: str) -> str:
 def release_from_json(data: dict) -> Release:
     """A Release from one entry of GitHub's releases API.
 
-    >>> release_from_json({"tag_name": "v1", "html_url": "u", "name": None,
+    >>> release_from_json({"tag_name": "v1", "html_url": "u", "name": None, "published_at": "2026-01-02T03:04:05Z",
     ...     "assets": [{"name": "a.flatpak", "browser_download_url": "d", "size": 5}]})
-    Release(tag='v1', name='v1', html_url='u', prerelease=False, assets=[Asset(name='a.flatpak', url='d', size=5)])
+    Release(tag='v1', name='v1', html_url='u', prerelease=False, published='2026-01-02T03:04:05Z', assets=[Asset(name='a.flatpak', url='d', size=5)])
     """
     return Release(
         tag=data["tag_name"],
         name=data.get("name") or data["tag_name"],
         html_url=data["html_url"],
         prerelease=data.get("prerelease", False),
+        published=data.get("published_at") or "",
         assets=[
             Asset(name=a["name"], url=a["browser_download_url"], size=a.get("size", 0))
             for a in data.get("assets", [])

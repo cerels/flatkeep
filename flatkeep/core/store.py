@@ -25,11 +25,13 @@ class TrackedApp:
     - name: what the list shows; empty means "use the app ID"
     - kind: FLATPAK or WATCH
     - installed_tag: release tag Flatkeep last installed ("" if unknown)
+    - installed_published: when that release was published ("" if unknown)
     - asset_pattern: regex choosing between several .flatpak files ("" = any)
     - auto_update: background checks install updates (True) or only notify
     - include_prereleases: also consider releases marked as pre-release
     - wm_class: window class for the taskbar fix ("" = no fix)
     - seen_tag: watched repos only, the release the user last looked at
+    - seen_published: when that release was published ("" if unknown)
     - notified_tag: the last release we sent a notification about
     """
 
@@ -38,11 +40,13 @@ class TrackedApp:
     name: str = ""
     kind: str = FLATPAK
     installed_tag: str = ""
+    installed_published: str = ""
     asset_pattern: str = ""
     auto_update: bool = True
     include_prereleases: bool = False
     wm_class: str = ""
     seen_tag: str = ""
+    seen_published: str = ""
     notified_tag: str = ""
 
     @property
@@ -73,7 +77,7 @@ def from_dict(data: dict) -> TrackedApp:
     keys get their defaults, so old apps.json files keep working.
 
     >>> from_dict({"app_id": "a.b.C", "repo": "o/r", "no_longer_used": 1})
-    TrackedApp(app_id='a.b.C', repo='o/r', name='', kind='flatpak', installed_tag='', asset_pattern='', auto_update=True, include_prereleases=False, wm_class='', seen_tag='', notified_tag='')
+    TrackedApp(app_id='a.b.C', repo='o/r', name='', kind='flatpak', installed_tag='', installed_published='', asset_pattern='', auto_update=True, include_prereleases=False, wm_class='', seen_tag='', seen_published='', notified_tag='')
     """
     known = {f.name for f in fields(TrackedApp)}
     return TrackedApp(**{key: value for key, value in data.items() if key in known})

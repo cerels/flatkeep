@@ -39,6 +39,29 @@ def normalize(version: str | None) -> str:
     return (version or "").strip().lstrip("vV")
 
 
+def is_newer(release: Release, have_tags: tuple[str, ...], have_published: str) -> bool:
+    """Is release newer than what we have: the release(s) tagged have_tags,
+    published at have_published ("" if unknown)?
+
+    Publish dates decide when both are known, because tags like
+    "3.5.0-rc.1" and "nightly-2026-10-01" can't be compared reliably.
+    Without dates, any other tag counts as newer.
+
+    >>> stable_1_18 = NO_FLATPAK_RELEASE  # 1.18.4, published 2026-08-01
+    >>> is_newer(stable_1_18, ("1.19.2",), "2026-09-20T00:00:00Z")  # pre-releases turned off
+    False
+    >>> is_newer(stable_1_18, ("1.18.3",), "2026-06-01T00:00:00Z")
+    True
+    >>> is_newer(stable_1_18, ("1.18.4",), "")  # no date saved yet: compare tags
+    False
+    >>> is_newer(stable_1_18, ("v1.18.3", "1.18.3"), "")
+    True
+    """
+    if have_published and release.published:
+        return release.published > have_published
+    return normalize(release.tag) not in {normalize(tag) for tag in have_tags if tag}
+
+
 @dataclass
 class Status:
     """What a check found out about a tracked app.
@@ -90,17 +113,23 @@ class Status:
         True
         >>> Status(NUVIO, "0.1.27-alpha", error="offline").update_available
         False
+
+        Never a downgrade: with an installed rc, an older stable release isn't
+        an update (this happens when pre-releases are turned off).
+
+        >>> on_rc = dataclasses.replace(NUVIO, installed_tag="0.2.0-rc.1", installed_published="2026-10-20T00:00:00Z")
+        >>> Status(on_rc, "0.2.0-rc.1", NUVIO_RELEASE, nuvio_asset).update_available
+        False
         """
         if self.error or not self.release:
             return False
         if self.app.is_watch:
-            return normalize(self.release.tag) != normalize(self.app.seen_tag)
+            return is_newer(self.release, (self.app.seen_tag,), self.app.seen_published)
         if not self.asset:
             return False
         if self.installed is None:
             return True
-        latest = normalize(self.release.tag)
-        return latest not in (normalize(self.app.installed_tag), normalize(self.installed))
+        return is_newer(self.release, (self.app.installed_tag, self.installed), self.app.installed_published)
 
 
 def choose_flatpak_release(
@@ -154,12 +183,13 @@ def watched_app(repo: str, latest: Release, include_prereleases: bool = False) -
     only later releases are announced.
 
     >>> app = watched_app("flatpak/flatpak", NO_FLATPAK_RELEASE)
-    >>> app.app_id, app.name, app.is_watch, app.seen_tag, app.notified_tag
-    ('github:flatpak/flatpak', 'flatpak', True, '1.18.4', '1.18.4')
+    >>> app.app_id, app.name, app.is_watch, app.seen_tag, app.seen_published, app.notified_tag
+    ('github:flatpak/flatpak', 'flatpak', True, '1.18.4', '2026-08-01T09:00:00Z', '1.18.4')
     """
     return TrackedApp(
         app_id=f"github:{repo}", repo=repo, name=repo.split("/")[1], kind=WATCH,
-        include_prereleases=include_prereleases, seen_tag=latest.tag, notified_tag=latest.tag,
+        include_prereleases=include_prereleases,
+        seen_tag=latest.tag, seen_published=latest.published, notified_tag=latest.tag,
     )
 
 
@@ -186,10 +216,10 @@ def with_changes(
     auto_update: bool | None = None,
     asset_pattern: str | None = None,
     wm_class: str | None = None,
-    latest_tag: str = "",
+    latest: Release | None = None,
 ) -> TrackedApp:
     """The app with the given settings changed; None means "keep". A watched
-    repo moved to another repo starts fresh: new ID, and latest_tag (the new
+    repo moved to another repo starts fresh: new ID, and latest (the new
     repo's newest release) counts as seen.
 
     >>> with_changes(NUVIO, name="  ").name  # blank name: use the repo's
@@ -197,9 +227,10 @@ def with_changes(
     >>> changed = with_changes(NUVIO, include_prereleases=True, auto_update=False, wm_class=" X ")
     >>> changed.include_prereleases, changed.auto_update, changed.wm_class, NUVIO.auto_update
     (True, False, 'X', True)
-    >>> moved = with_changes(FLATPAK_REPO, repo="flatpak/flatpak-builder", latest_tag="1.4.12")
-    >>> moved.app_id, moved.repo, moved.seen_tag, moved.notified_tag
-    ('github:flatpak/flatpak-builder', 'flatpak/flatpak-builder', '1.4.12', '1.4.12')
+    >>> builder_latest = dataclasses.replace(NO_FLATPAK_RELEASE, tag="1.4.12", published="2026-07-01T00:00:00Z")
+    >>> moved = with_changes(FLATPAK_REPO, repo="flatpak/flatpak-builder", latest=builder_latest)
+    >>> moved.app_id, moved.repo, moved.seen_tag, moved.seen_published, moved.notified_tag
+    ('github:flatpak/flatpak-builder', 'flatpak/flatpak-builder', '1.4.12', '2026-07-01T00:00:00Z', '1.4.12')
     >>> with_changes(NUVIO, repo="NuvioMedia/Nuvio-Fork").app_id  # installed apps keep their ID
     'com.nuvio.media.desktop'
     """
@@ -218,8 +249,31 @@ def with_changes(
     if new_repo.lower() != app.repo.lower():
         changes["repo"] = new_repo
         if app.is_watch:
-            changes.update(app_id=f"github:{new_repo}", seen_tag=latest_tag, notified_tag=latest_tag)
+            changes.update(
+                app_id=f"github:{new_repo}",
+                seen_tag=latest.tag, seen_published=latest.published, notified_tag=latest.tag,
+            )
     return dataclasses.replace(app, **changes)
+
+
+def with_dates_filled(app: TrackedApp, release: Release) -> TrackedApp:
+    """The app with its missing publish date filled in, when release is the
+    one it has (installed, or last seen). Apps saved before Flatkeep stored
+    dates get them this way on their next check.
+
+    >>> with_dates_filled(NUVIO, NUVIO_RELEASE).installed_published
+    '2026-10-03T10:58:40Z'
+    >>> newer = dataclasses.replace(NUVIO_RELEASE, tag="0.1.28-alpha", published="2026-10-10T00:00:00Z")
+    >>> with_dates_filled(NUVIO, newer).installed_published  # not the one installed
+    ''
+    >>> with_dates_filled(FLATPAK_REPO, NO_FLATPAK_RELEASE).seen_published
+    '2026-08-01T09:00:00Z'
+    """
+    if app.is_watch and not app.seen_published and normalize(release.tag) == normalize(app.seen_tag):
+        return dataclasses.replace(app, seen_published=release.published)
+    if not app.is_watch and not app.installed_published and normalize(release.tag) == normalize(app.installed_tag):
+        return dataclasses.replace(app, installed_published=release.published)
+    return app
 
 
 def window_matches(app_id: str, window: WindowInfo) -> bool:
@@ -245,8 +299,9 @@ def find_flatpak_release(repo: str, include_prereleases: bool = False, pattern: 
 def check(app: TrackedApp, installed_apps: dict[str, str] | None = None) -> Status:
     """The app's status. installed_apps saves asking flatpak once per app.
 
-    Effect: asks GitHub (and flatpak, if installed_apps isn't given).
-    Never raises: problems end up in Status.error.
+    Effect: asks GitHub (and flatpak, if installed_apps isn't given), and
+    saves a missing publish date (see with_dates_filled). Never raises:
+    problems end up in Status.error.
     """
     if installed_apps is None:
         installed_apps = host.installed_apps()
@@ -258,6 +313,12 @@ def check(app: TrackedApp, installed_apps: dict[str, str] | None = None) -> Stat
             status.release, status.asset = find_flatpak_release(app.repo, app.include_prereleases, app.asset_pattern)
     except Exception as e:
         status.error = str(e)
+        return status
+
+    filled = with_dates_filled(app, status.release)
+    if filled != app:
+        app.__dict__.update(filled.__dict__)  # callers keep this object, like edit()
+        store.put(app)
     return status
 
 
@@ -282,7 +343,8 @@ def add(repo_text: str, progress=None, include_prereleases: bool = False) -> Tra
         store.save_icon(info.app_id, info.icon)
     app = TrackedApp(
         app_id=info.app_id, repo=repo, name=info.name,
-        installed_tag=release.tag, include_prereleases=include_prereleases,
+        installed_tag=release.tag, installed_published=release.published,
+        include_prereleases=include_prereleases,
     )
     store.put(app)
     return app
@@ -324,18 +386,18 @@ def edit(
     if repo_changed:
         _check_not_tracked(new_repo)
 
-    latest_tag = ""
+    latest = None
     if repo_changed or include_prereleases is not None or asset_pattern is not None:
         prereleases = app.include_prereleases if include_prereleases is None else include_prereleases
         if app.is_watch:
-            latest_tag = github.latest_release(new_repo, prereleases).tag
+            latest = github.latest_release(new_repo, prereleases)
         else:
             pattern = app.asset_pattern if asset_pattern is None else asset_pattern
-            latest_tag = find_flatpak_release(new_repo, prereleases, pattern)[0].tag
+            latest = find_flatpak_release(new_repo, prereleases, pattern)[0]
 
     changed = with_changes(
         app, name=name, repo=new_repo, include_prereleases=include_prereleases,
-        auto_update=auto_update, asset_pattern=asset_pattern, wm_class=wm_class, latest_tag=latest_tag,
+        auto_update=auto_update, asset_pattern=asset_pattern, wm_class=wm_class, latest=latest,
     )
     # Re-applied even when unchanged: that restores a launcher that went missing.
     if wm_class is not None and not app.is_watch:
@@ -351,10 +413,11 @@ def edit(
     return app
 
 
-def mark_seen(app: TrackedApp, tag: str) -> None:
-    """Effect: records that the user looked at release tag (and was told about it)."""
-    app.seen_tag = tag
-    app.notified_tag = tag
+def mark_seen(app: TrackedApp, release: Release) -> None:
+    """Effect: records that the user looked at release (and was told about it)."""
+    app.seen_tag = release.tag
+    app.seen_published = release.published
+    app.notified_tag = release.tag
     store.put(app)
 
 
@@ -385,6 +448,7 @@ def update(app: TrackedApp, progress=None) -> str | None:
     if info.icon:
         store.save_icon(app.app_id, info.icon)
     app.installed_tag = status.release.tag
+    app.installed_published = status.release.published
     store.put(app)
     # Rebuild our launcher copy from the new version's launcher.
     if app.wm_class:

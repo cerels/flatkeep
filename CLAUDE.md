@@ -98,6 +98,10 @@ In the UI and CLI:
 - GUI: slow work runs through `ui/tasks.py` `run_async(func, callback)`;
   only touch widgets in the callback (main thread). Progress callbacks from
   threads must go through `GLib.idle_add`.
+- "Is this release new?" is `updater.is_newer()`: publish dates decide when
+  known (tags can't be compared reliably), so turning pre-releases off never
+  offers or installs an older release. Apps saved before dates existed get
+  them on their next check (`with_dates_filled`).
 - `store.put()` replaces an entry in place (keeps list order). Watched repos
   have IDs like `github:owner/name`; `store.icon_path()` replaces `/` with `_`.
 - New `TrackedApp` fields need a default value: `store.load()` drops unknown

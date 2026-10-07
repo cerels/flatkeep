@@ -332,7 +332,7 @@ class AppRow(Adw.ActionRow):
         release = self.status.release
         open_url(self.window, release.html_url)
         self.set_busy(True)
-        run_async(lambda: updater.mark_seen(self.app, release.tag), lambda _r, _e: self.recheck())
+        run_async(lambda: updater.mark_seen(self.app, release), lambda _r, _e: self.recheck())
 
     def show_edit(self) -> None:
         """Open the Edit dialog. Closing it refreshes the list, since the
