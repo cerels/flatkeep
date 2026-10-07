@@ -24,6 +24,11 @@ modules:
       - install -Dm644 data/io.github.cerels.Flatkeep.desktop -t /app/share/applications
       - install -Dm644 data/io.github.cerels.Flatkeep.metainfo.xml -t /app/share/metainfo
       - install -Dm644 data/io.github.cerels.Flatkeep.svg -t /app/share/icons/hicolor/scalable/apps
+      # PNG sizes too: some launchers don't pick up a new scalable/ folder until restarted
+      - for size in 64 128 256 512; do
+          rsvg-convert -w $size -h $size data/io.github.cerels.Flatkeep.svg -o icon-$size.png &&
+          install -Dm644 icon-$size.png /app/share/icons/hicolor/${size}x${size}/apps/io.github.cerels.Flatkeep.png;
+        done
     sources:
       - type: dir
         path: .
