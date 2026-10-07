@@ -2,7 +2,8 @@ import sys
 
 
 def main() -> int:
-    # Any arguments mean command line mode; none opens the window.
+    """Run the command line if there are arguments, else open the window.
+    Returns the exit status."""
     if len(sys.argv) > 1:
         from .cli import main as cli_main
 

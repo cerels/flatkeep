@@ -1,4 +1,5 @@
-"""Run the examples (doctests) written in the docstrings of flatkeep.core.
+"""Run the examples (doctests) written in the docstrings of Flatkeep's
+GTK-free modules: flatkeep.core and the command line.
 
     python3 -m unittest            # from the project folder
 """
@@ -7,8 +8,10 @@ import doctest
 import importlib
 
 MODULES = [
+    "flatkeep.cli",
     "flatkeep.core.background",
     "flatkeep.core.bundle",
+    "flatkeep.core.describe",
     "flatkeep.core.desktop_entry",
     "flatkeep.core.github",
     "flatkeep.core.host",

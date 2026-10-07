@@ -1,19 +1,52 @@
-"""Command line interface: `flatkeep add|watch|edit|list|update|remove|...`."""
+"""Command line interface: `flatkeep add|watch|edit|list|update|remove|...`.
+
+Each cmd_* function carries out one command and returns the exit status
+(0 = success). What gets printed comes from core/describe.py.
+"""
 
 import argparse
 import sys
 
-from .core import background, host, store, updater
+from .core import background, describe, host, store, updater
+from .core.store import TrackedApp
+
+# Examples from the other modules, used in this module's examples.
+from .core.store import FLATPAK_REPO, NUVIO  # noqa: E402
+
+
+def find_app(apps: list[TrackedApp], app_id: str, installed_only: bool = False) -> TrackedApp | None:
+    """The app with app_id; with installed_only, watched repos don't count.
+
+    >>> find_app([NUVIO, FLATPAK_REPO], "github:flatpak/flatpak").name
+    'flatpak'
+    >>> find_app([NUVIO, FLATPAK_REPO], "github:flatpak/flatpak", installed_only=True) is None
+    True
+    """
+    return next((a for a in apps if a.app_id == app_id and not (installed_only and a.is_watch)), None)
+
+
+def apps_to_update(apps: list[TrackedApp], app_ids: list[str]) -> list[TrackedApp]:
+    """The installed apps `flatkeep update` should update: the ones named,
+    or all of them when none are.
+
+    >>> [a.name for a in apps_to_update([NUVIO, FLATPAK_REPO], [])]
+    ['Nuvio']
+    >>> apps_to_update([NUVIO], ["org.example.Other"])
+    []
+    """
+    installed = [a for a in apps if not a.is_watch]
+    return [a for a in installed if a.app_id in app_ids] if app_ids else installed
 
 
 def _progress(fraction: float) -> None:
-    label = "Installing…" if fraction >= 1 else f"Downloading… {fraction:.0%}"
-    print(f"\r{label:<20}", end="", file=sys.stderr, flush=True)
+    """Effect: shows download progress on one terminal line."""
+    print(f"\r{describe.progress_text(fraction):<20}", end="", file=sys.stderr, flush=True)
     if fraction >= 1:
         print(file=sys.stderr)
 
 
 def cmd_add(args) -> int:
+    """Track and install an app; suggests `watch` if it has no .flatpak."""
     try:
         app = updater.add(args.repo, _progress, include_prereleases=args.prereleases)
     except updater.NoFlatpakError as e:
@@ -24,27 +57,29 @@ def cmd_add(args) -> int:
 
 
 def cmd_watch(args) -> int:
+    """Watch a repo for new releases."""
     app = updater.watch(args.repo, include_prereleases=args.prereleases)
     print(f"Watching {app.repo}, latest release is {app.seen_tag}")
     return 0
 
 
 def cmd_edit(args) -> int:
-    app = next((a for a in store.load() if a.app_id == args.app_id), None)
+    """Change an app's settings; options left out stay as they are."""
+    app = find_app(store.load(), args.app_id)
     if app is None:
         print(f"error: {args.app_id} isn't tracked (see: flatkeep list)", file=sys.stderr)
         return 1
     app = updater.edit(
-        app, name=args.name, repo_text=args.repo, include_prereleases=args.prereleases,
+        app, name=args.name, repo=args.repo, include_prereleases=args.prereleases,
         auto_update=args.auto_update, asset_pattern=args.file_filter, wm_class=args.window_class,
     )
-    print(f"{app.app_id}: repo {app.repo}, pre-releases {'on' if app.include_prereleases else 'off'}"
-          + ("" if app.is_watch else f", auto-update {'on' if app.auto_update else 'off'}"))
+    print(describe.settings_line(app))
     return 0
 
 
 def cmd_fix_taskbar(args) -> int:
-    app = next((a for a in store.load() if a.app_id == args.app_id and not a.is_watch), None)
+    """Apply the taskbar fix, detecting the window class unless given."""
+    app = find_app(store.load(), args.app_id, installed_only=True)
     if app is None:
         print(f"error: {args.app_id} isn't an installed app tracked by Flatkeep", file=sys.stderr)
         return 1
@@ -58,35 +93,21 @@ def cmd_fix_taskbar(args) -> int:
 
 
 def cmd_list(args) -> int:
+    """Show every tracked app and whether there's something new."""
     apps = store.load()
     if not apps:
         print("No apps tracked yet. Add one with: flatkeep add <github-repo>")
         return 0
     installed = host.installed_apps()
     for app in apps:
-        status = updater.check(app, installed)
-        if status.error:
-            state = f"error: {status.error}"
-        elif app.is_watch:
-            state = f"new release {status.release.tag}" if status.update_available else f"watching ({status.release.tag})"
-        elif status.installed is None:
-            state = f"not installed (latest {status.release.tag})"
-        elif status.update_available:
-            state = f"{status.current} -> {status.release.tag}"
-        else:
-            state = f"{status.current} (up to date)"
-        if status.release and status.release.prerelease:
-            state += " [pre-release]"
-        print(f"{app.name or app.app_id:<24} {app.app_id:<36} {state}")
+        print(describe.list_line(updater.check(app, installed)))
     return 0
 
 
 def cmd_update(args) -> int:
-    apps = [a for a in store.load() if not a.is_watch]
-    if args.app_ids:
-        apps = [a for a in apps if a.app_id in args.app_ids]
+    """Install available updates; fails if any app couldn't be updated."""
     failed = 0
-    for app in apps:
+    for app in apps_to_update(store.load(), args.app_ids):
         try:
             tag = updater.update(app, _progress)
         except Exception as e:
@@ -98,17 +119,20 @@ def cmd_update(args) -> int:
 
 
 def cmd_remove(args) -> int:
+    """Stop tracking an app, optionally uninstalling it."""
     updater.remove(args.app_id, uninstall=args.uninstall)
     print(f"Removed {args.app_id}" + (" and uninstalled it" if args.uninstall else ""))
     return 0
 
 
 def cmd_check_updates(args) -> int:
+    """What the background timer runs."""
     background.check_updates()
     return 0
 
 
 def cmd_background(args) -> int:
+    """Turn background checks on or off, or show whether they're on."""
     if args.state == "on":
         background.enable()
     elif args.state == "off":
@@ -117,7 +141,15 @@ def cmd_background(args) -> int:
     return 0
 
 
-def main(argv: list[str]) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line's commands and options; each command's function is
+    stored as `func`.
+
+    >>> build_parser().parse_args(["edit", "a.b.C", "--no-prereleases"]).prereleases
+    False
+    >>> build_parser().parse_args(["background"]).state
+    'status'
+    """
     parser = argparse.ArgumentParser(
         prog="flatkeep",
         description="Install and update Flatpak bundles from GitHub releases. Run without arguments to open the app.",
@@ -167,8 +199,12 @@ def main(argv: list[str]) -> int:
     p.add_argument("app_id")
     p.add_argument("--uninstall", action="store_true", help="also uninstall the app")
     p.set_defaults(func=cmd_remove)
+    return parser
 
-    args = parser.parse_args(argv)
+
+def main(argv: list[str]) -> int:
+    """Run the command in argv; errors are printed, not raised."""
+    args = build_parser().parse_args(argv)
     try:
         return args.func(args)
     except Exception as e:

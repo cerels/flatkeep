@@ -51,8 +51,8 @@ desktop-file-validate data/io.github.cerels.Flatkeep.desktop
 
 ## Code style: the HtDP design recipe
 
-`flatkeep/core/` follows the design recipe from *How to Design Programs*,
-adapted to Python. Keep new core code in the same shape:
+All the code follows the design recipe from *How to Design Programs*,
+adapted to Python. Keep new code in the same shape:
 
 1. **Data definitions:** each dataclass docstring says what it represents and
    what every field means ("Interpretation:"), followed by example values as
@@ -70,7 +70,17 @@ adapted to Python. Keep new core code in the same shape:
 
 `updater.edit()` copies the result of the pure `with_changes()` back into the
 same `TrackedApp` object, because the window and Edit dialog keep that object.
-`ui/` and `cli.py` haven't been through the recipe yet (stage two).
+
+In the UI and CLI:
+- Everything the program *says* (row subtitles and buttons, `flatkeep list`
+  lines, dialog questions, Edit dialog values) comes from pure functions in
+  `core/describe.py`, shared by the window and the command line. Change the
+  wording there, with examples.
+- Yes/no dialogs are `describe.Question` values shown by `window.ask()`.
+- UI methods have a purpose statement; an `Effect:` line marks the ones that
+  start work outside the window (GitHub, flatpak, files, KWin).
+- The Edit dialog keys its rows by `TrackedApp` field name (`self.rows`), and
+  `updater.edit()` takes those same names as keyword arguments.
 
 ## Architecture rules
 
@@ -112,8 +122,8 @@ reviewers will question `org.freedesktop.Flatpak`; it's essential to the app.
 ## Testing
 
 `python3 -m unittest` runs every docstring example of the modules listed in
-`tests/test_examples.py`; add new core modules there. CI runs it before
-building. Beyond that, these manual checks have been used and work:
+`tests/test_examples.py`; add new GTK-free modules there (CI has no GTK, so
+`flatkeep/ui/` can't be listed). CI runs them before building. Beyond that, these manual checks have been used and work:
 
 - Run the CLI against real repos: `NuvioMedia/NuvioDesktop` (has a `.flatpak`),
   `flatpak/flatpak` (no `.flatpak`, has pre-releases; good for `watch`).

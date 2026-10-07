@@ -125,9 +125,10 @@ Logs: `journalctl --user -u flatkeep-update`
 ## Project layout
 
 ```
+All code follows the HtDP design recipe (see CLAUDE.md).
+
 flatkeep/
-  core/            no GTK here: usable from the CLI, the UI or tests;
-                   written with the HtDP design recipe (see CLAUDE.md)
+  core/            no GTK here: usable from the CLI, the UI or tests
     github.py      release lookup, picking the asset, downloading
     bundle.py      reading app ID/name/icon from a .flatpak file
     host.py        every call to the `flatpak` command
@@ -136,6 +137,7 @@ flatkeep/
     background.py  the systemd timer and what it runs
     notify.py      desktop notifications without the window open
     windows.py     reading window classes from KWin
+    describe.py    everything the window and command line say about apps
     desktop_entry.py  launcher copies with StartupWMClass (taskbar fix)
   ui/              GTK 4 + libadwaita window and the Edit dialog
   cli.py           `flatkeep add|list|update|remove`

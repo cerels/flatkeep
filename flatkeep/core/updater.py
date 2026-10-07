@@ -305,21 +305,21 @@ def edit(
     app: TrackedApp,
     *,
     name: str | None = None,
-    repo_text: str | None = None,
+    repo: str | None = None,
     include_prereleases: bool | None = None,
     auto_update: bool | None = None,
     asset_pattern: str | None = None,
     wm_class: str | None = None,
 ) -> TrackedApp:
-    """Change an app's settings (see with_changes). Nothing is saved unless
-    GitHub still finds a usable release with the new settings.
+    """Change an app's settings (see with_changes); repo may be a URL. Nothing
+    is saved unless GitHub still finds a usable release with the new settings.
 
     Effect: asks GitHub, saves the app, applies or undoes the taskbar fix.
     Also updates app itself, because the UI keeps hold of that object.
     """
     if asset_pattern is not None:
         check_pattern(asset_pattern)
-    new_repo = github.parse_repo(repo_text) if repo_text is not None else app.repo
+    new_repo = github.parse_repo(repo) if repo is not None else app.repo
     repo_changed = new_repo.lower() != app.repo.lower()
     if repo_changed:
         _check_not_tracked(new_repo)
